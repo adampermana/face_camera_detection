@@ -1,4 +1,8 @@
+import 'package:camera/camera.dart';
 import 'package:face_camera_detector/src/controllers/face_cameras_controllers.dart';
+import 'package:face_camera_detector/src/controllers/face_cameras_state.dart';
+import 'package:face_camera_detector/src/paints/faces_painters.dart';
+import 'package:face_camera_detector/src/paints/hole_painter.dart';
 import 'package:face_camera_detector/src/resolution/builders.dart';
 import 'package:face_camera_detector/src/resolution/enum_resolution.dart';
 import 'package:flutter/material.dart';
@@ -77,9 +81,228 @@ class FaceCamera extends StatefulWidget {
   State<FaceCamera> createState() => _FaceCameraState();
 }
 
-class _FaceCameraState extends State<FaceCamera> {
+class _FaceCameraState extends State<FaceCamera> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    WidgetsBinding.instance.addObserver(this);
+    widget.controller.initialize();
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.controller.stopImageStram();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive) {
+      widget.controller.stopImageStram();
+    } else if (state == AppLifecycleState.paused) {
+      widget.controller.stopImageStram();
+    } else if (state == AppLifecycleState.resumed) {
+      widget.controller.startImageStream();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return const Placeholder();
+    final size = MediaQuery.of(context).size;
+    return ValueListenableBuilder<FaceCamerasState>(
+      valueListenable: widget.controller,
+      builder: (BuildContext context, FaceCamerasState value, Widget? child) {
+        final CameraController? cameraController = value.cameraController;
+        return Stack(
+          alignment: Alignment.center,
+          children: [
+            if (cameraController != null &&
+                cameraController.value.isInitialized) ...[
+              Transform.scale(
+                scale: 1.0,
+                child: AspectRatio(
+                  aspectRatio: size.aspectRatio,
+                  child: OverflowBox(
+                    alignment: Alignment.center,
+                    child: FittedBox(
+                      fit: BoxFit.fitHeight,
+                      child: SizedBox(
+                        width: size.width,
+                        height: size.width * cameraController.value.aspectRatio,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: <Widget>[
+                            _cameraDisplayWidget(value),
+                            if (value.detectedFace != null &&
+                                widget.indicatorShape !=
+                                    IndicatorShape.none) ...[
+                              SizedBox(
+                                  width:
+                                      cameraController.value.previewSize!.width,
+                                  height: cameraController
+                                      .value.previewSize!.height,
+                                  child: widget.indicatorBuilder?.call(
+                                          context,
+                                          value.detectedFace,
+                                          Size(
+                                            cameraController
+                                                .value.previewSize!.height,
+                                            cameraController
+                                                .value.previewSize!.width,
+                                          )) ??
+                                      CustomPaint(
+                                        painter: FacePainter(
+                                            face: value.detectedFace!.face,
+                                            indicatorShape:
+                                                widget.indicatorShape,
+                                            indicatorAssetImage:
+                                                widget.indicatorAssetImage,
+                                            imageSize: Size(
+                                              cameraController
+                                                  .value.previewSize!.height,
+                                              cameraController
+                                                  .value.previewSize!.width,
+                                            )),
+                                      ))
+                            ]
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            ] else ...[
+              const Text('No Camera Detected',
+                  style: TextStyle(
+                    fontSize: 18.0,
+                    fontWeight: FontWeight.w500,
+                  )),
+              CustomPaint(
+                size: size,
+                painter: HolePainter(),
+              )
+            ],
+            if (widget.showControls) ...[
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: const EdgeInsets.all(15.0),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.showFlashControl) ...[
+                        _flashControlWidget(value)
+                      ],
+                      if (widget.showCaptureControl) ...[
+                        const SizedBox(width: 15),
+                        _captureControlWidget(value),
+                        const SizedBox(width: 15)
+                      ],
+                      if (widget.showCameraLensControl) ...[
+                        _lensControlWidget()
+                      ],
+                    ],
+                  ),
+                ),
+              )
+            ]
+          ],
+        );
+      },
+    );
+  }
+
+  /// Render camera.
+  Widget _cameraDisplayWidget(FaceCamerasState value) {
+    final CameraController? cameraController = value.cameraController;
+    if (cameraController != null && cameraController.value.isInitialized) {
+      return CameraPreview(cameraController, child: Builder(builder: (context) {
+        if (widget.messageBuilder != null) {
+          return widget.messageBuilder!.call(context, value.detectedFace);
+        }
+        if (widget.message != null) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 55, vertical: 15),
+            child: Text(widget.message!,
+                textAlign: TextAlign.center, style: widget.messageStyle),
+          );
+        }
+        return const SizedBox.shrink();
+      }));
+    }
+    return const SizedBox.shrink();
+  }
+
+  /// Determines when to disable the capture control button.
+  bool get _disableCapture =>
+      widget.autoDisableCaptureControl &&
+      widget.controller.value.detectedFace?.face == null;
+
+  /// Determines the camera controls color.
+  Color? get iconColor =>
+      widget.controller.enableControls ? null : Theme.of(context).disabledColor;
+
+  /// Display the control buttons to take pictures.
+  Widget _captureControlWidget(FaceCamerasState value) {
+    return IconButton(
+      icon: widget.captureControlBuilder?.call(context, value.detectedFace) ??
+          CircleAvatar(
+              radius: 35,
+              foregroundColor:
+                  widget.controller.enableControls && !_disableCapture
+                      ? null
+                      : Theme.of(context).disabledColor,
+              child: const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Icon(Icons.camera_alt, size: 35),
+              )),
+      onPressed: widget.controller.enableControls && !_disableCapture
+          ? widget.controller.onTakePictureButtonPressed
+          : null,
+    );
+  }
+
+  /// Display the control buttons to switch between flash modes.
+  Widget _flashControlWidget(FaceCamerasState value) {
+    final availableFlashMode = value.availableFlashMode;
+    final currentFlashMode = value.currentFlashMode;
+    final icon = availableFlashMode[currentFlashMode] == CameraFlashMode.always
+        ? Icons.flash_on
+        : availableFlashMode[currentFlashMode] == CameraFlashMode.off
+            ? Icons.flash_off
+            : Icons.flash_auto;
+
+    return IconButton(
+      icon: widget.flashControlBuilder
+              ?.call(context, availableFlashMode[currentFlashMode]) ??
+          CircleAvatar(
+              radius: 25,
+              foregroundColor: iconColor,
+              child: Padding(
+                padding: const EdgeInsets.all(2.0),
+                child: Icon(icon, size: 25),
+              )),
+      onPressed: widget.controller.enableControls
+          ? widget.controller.changeFlashMode
+          : null,
+    );
+  }
+
+  /// Display the control buttons to switch between camera lens.
+  Widget _lensControlWidget() {
+    return IconButton(
+        icon: widget.lensControlIcon ??
+            CircleAvatar(
+                radius: 25,
+                foregroundColor: iconColor,
+                child: const Padding(
+                  padding: EdgeInsets.all(2.0),
+                  child: Icon(Icons.switch_camera_sharp, size: 25),
+                )),
+        onPressed: widget.controller.enableControls
+            ? widget.controller.changeCameraLens
+            : null);
   }
 }
